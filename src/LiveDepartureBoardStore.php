@@ -8,14 +8,30 @@ final class LiveDepartureBoardStore
 {
     private Tile $tile;
 
-    public static function make(): static
+    public static function make(?string $station = null): static
     {
-        return new self;
+        return new self($station);
     }
 
-    public function __construct()
+    public function __construct(?string $station = null)
     {
-        $this->tile = Tile::firstOrCreateForName('live-departure-board');
+        $configuredStation = (string) config('dashboard.tiles.live_departure_board.station', 'Rm');
+        $station ??= $configuredStation;
+        $canMigrateLegacyData = strcasecmp(trim($station), trim($configuredStation)) === 0;
+        $station = strtolower(trim($station));
+        $tileName = "live-departure-board-{$station}";
+
+        $this->tile = Tile::firstOrCreateForName($tileName);
+
+        if (! $this->tile->wasRecentlyCreated || ! $canMigrateLegacyData) {
+            return;
+        }
+
+        $legacyTile = Tile::query()->where('name', 'live-departure-board')->first();
+
+        if ($legacyTile !== null) {
+            $this->tile->update(['data' => $legacyTile->data]);
+        }
     }
 
     /**

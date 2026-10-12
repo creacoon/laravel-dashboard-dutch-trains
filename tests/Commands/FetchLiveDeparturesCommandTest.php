@@ -116,9 +116,9 @@ class FetchLiveDeparturesCommandTest extends TestCase
         self::assertNull($departures[0]['actual_at'] ?? null);
     }
 
-    public function test_marks_departures_stale_when_departure_refresh_fails(): void
+    public function test_keeps_last_departures_and_marks_them_stale_when_refresh_fails(): void
     {
-        LiveDepartureBoardStore::make()->setDepartures([
+        $lastKnownDepartures = [
             [
                 'time' => '12:00',
                 'destination' => 'Utrecht',
@@ -128,7 +128,9 @@ class FetchLiveDeparturesCommandTest extends TestCase
                 'detail' => 'On schedule',
                 'track' => '1',
             ],
-        ]);
+        ];
+
+        LiveDepartureBoardStore::make()->setDepartures($lastKnownDepartures);
 
         Http::preventStrayRequests();
         Http::fake([
@@ -141,8 +143,47 @@ class FetchLiveDeparturesCommandTest extends TestCase
         self::assertSame(1, Artisan::call('dashboard:fetch-live-departure-board'));
 
         $store = LiveDepartureBoardStore::make();
-        self::assertSame([], $store->departures());
+        self::assertSame($lastKnownDepartures, $store->departures());
         self::assertTrue($store->departuresAreStale());
+    }
+
+    public function test_fetches_and_stores_departures_for_an_explicit_station(): void
+    {
+        Http::preventStrayRequests();
+        Http::fake([
+            'gateway.apiportal.ns.nl/reisinformatie-api/api/v2/departures*' => Http::response([
+                'payload' => [
+                    'departures' => [$this->apiDeparture('Utrecht')],
+                ],
+            ]),
+            'gateway.apiportal.ns.nl/reisinformatie-api/api/v3/disruptions/station/*' => Http::response([
+                'payload' => [],
+            ]),
+        ]);
+
+        self::assertSame(0, Artisan::call('dashboard:fetch-live-departure-board', [
+            '--station' => 'Rtd',
+        ]));
+
+        self::assertSame('Utrecht', LiveDepartureBoardStore::make('Rtd')->departures()[0]['destination']);
+        self::assertSame([], LiveDepartureBoardStore::make('Asd')->departures());
+        Http::assertSent(fn (Request $request): bool => str_contains($request->url(), '/api/v2/departures')
+            && $request['station'] === 'Rtd');
+    }
+
+    public function test_reports_each_connection_failure_once(): void
+    {
+        Http::preventStrayRequests();
+        Http::fake([
+            'gateway.apiportal.ns.nl/reisinformatie-api/api/v2/departures*' => Http::failedConnection(),
+            'gateway.apiportal.ns.nl/reisinformatie-api/api/v3/disruptions/station/*' => Http::failedConnection(),
+        ]);
+
+        self::assertSame(1, Artisan::call('dashboard:fetch-live-departure-board'));
+
+        $output = Artisan::output();
+        self::assertSame(1, substr_count($output, 'Could not connect to the NS departures API.'));
+        self::assertSame(1, substr_count($output, 'Could not connect to the NS disruptions API.'));
     }
 
     public function test_stores_active_station_disruptions(): void
@@ -348,6 +389,28 @@ class FetchLiveDeparturesCommandTest extends TestCase
         $data = $component->render()->getData();
 
         self::assertSame('Asd', $data['station_name']);
+    }
+
+    public function test_renders_departures_for_an_explicit_station(): void
+    {
+        LiveDepartureBoardStore::make('Rtd')->setDepartures([[
+            'time' => '12:05',
+            'destination' => 'Utrecht',
+            'service' => 'Intercity',
+            'status' => 'On time',
+            'status_code' => 'on_time',
+            'detail' => 'On schedule',
+            'track' => '1',
+            'planned_at' => now()->addMinutes(5)->toIso8601String(),
+            'actual_at' => null,
+        ]]);
+
+        $component = new LiveDepartureBoardTileComponent;
+        $component->mount('a1', 'Rtd', 'Rotterdam');
+        $data = $component->render()->getData();
+
+        self::assertSame('Rotterdam', $data['station_name']);
+        self::assertSame('Utrecht', $data['departures'][0]['destination']);
     }
 
     /**
