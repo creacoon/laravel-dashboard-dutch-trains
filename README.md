@@ -4,7 +4,7 @@ A Livewire tile for [Spatie Laravel Dashboard](https://github.com/spatie/laravel
 
 ## Requirements
 
-- PHP 8.5 or later
+- PHP 8.4 or later
 - Laravel 11, 12, or 13
 - Livewire 4
 - Spatie Laravel Dashboard 4
