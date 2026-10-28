@@ -43,7 +43,7 @@
             @else
                 @foreach($departures as $departure)
                     <div @class([
-                        'grid grid-cols-[3.5rem_1fr_6rem_3rem] items-center gap-3 rounded-xl border border-white/5 bg-white/[0.04] px-3 py-2.5 text-base',
+                        'grid grid-cols-[3.5rem_1fr_6rem_3rem] items-center gap-3 rounded-xl border border-white/5 bg-white/[0.04] px-3 py-1.5 text-base',
                         'opacity-60' => $departure['status_code'] === 'cancelled',
                     ])>
                         <div @class([
@@ -53,9 +53,9 @@
                             {{ $departure['time'] }}
                         </div>
 
-                        <div class="flex min-w-0 items-baseline gap-2">
-                            <span class="truncate font-medium text-default">{{ $departure['destination'] }}</span>
-                            <span class="min-w-0 shrink-[999] truncate text-sm text-dimmed">{{ $departure['service'] }}</span>
+                        <div class="min-w-0">
+                            <div class="truncate font-medium leading-tight text-default">{{ $departure['destination'] }}</div>
+                            <div class="truncate text-xs leading-tight text-dimmed">{{ $departure['service'] }}</div>
                         </div>
 
                         <div @class([
