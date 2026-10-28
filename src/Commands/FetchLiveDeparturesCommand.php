@@ -5,12 +5,16 @@ namespace Creacoon\LiveDepartureBoardTile\Commands;
 use Carbon\CarbonImmutable;
 use Creacoon\LiveDepartureBoardTile\LiveDepartureBoardStore;
 use Illuminate\Console\Command;
-use Illuminate\Http\Client\ConnectionException;
+use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 use Throwable;
 
+/**
+ * @phpstan-import-type Departure from LiveDepartureBoardStore
+ * @phpstan-import-type Disruption from LiveDepartureBoardStore
+ */
 class FetchLiveDeparturesCommand extends Command
 {
     protected $signature = 'dashboard:fetch-live-departure-board {--station=}';
@@ -19,132 +23,96 @@ class FetchLiveDeparturesCommand extends Command
 
     public function handle(): int
     {
-        $apiKey = config('dashboard.tiles.live_departure_board.api_key');
+        $station = (string) ($this->option('station') ?: LiveDepartureBoardStore::defaultStation());
+        $store = LiveDepartureBoardStore::make($station);
+        $apiKey = (string) config('dashboard.tiles.live_departure_board.api_key');
 
         if (blank($apiKey)) {
-            $store = LiveDepartureBoardStore::make();
-            $store->markDeparturesStale();
-            $store->markDisruptionsStale();
+            $store->refresh(null, null);
             $this->error('Set dashboard.tiles.live_departure_board.api_key (for example via NS_API_KEY in config/dashboard.php) before fetching live departures.');
 
             return self::FAILURE;
         }
 
-        $station = (string) ($this->option('station') ?: config('dashboard.tiles.live_departure_board.station', 'Rm'));
-        $errors = [];
+        $encodedStation = rawurlencode($station);
+        $responses = Http::pool(fn (Pool $pool) => [
+            $this->nsRequest($pool->as('departures'), $apiKey)->get('v2/departures', [
+                'station' => $station,
+            ]),
+            $this->nsRequest($pool->as('disruptions'), $apiKey)->get("v3/disruptions/station/{$encodedStation}", [
+                'isActive' => 'true',
+            ]),
+        ]);
 
-        try {
-            $encodedStation = rawurlencode($station);
-            $responses = Http::pool(fn (Pool $pool) => [
-                $pool->as('departures')
-                    ->acceptJson()
-                    ->withHeaders([
-                        'Cache-Control' => 'no-cache',
-                        'Ocp-Apim-Subscription-Key' => $apiKey,
-                    ])
-                    ->connectTimeout(3)
-                    ->timeout(10)
-                    ->get('https://gateway.apiportal.ns.nl/reisinformatie-api/api/v2/departures', [
-                        'station' => $station,
-                    ]),
-                $pool->as('disruptions')
-                    ->acceptJson()
-                    ->withHeaders([
-                        'Cache-Control' => 'no-cache',
-                        'Ocp-Apim-Subscription-Key' => $apiKey,
-                    ])
-                    ->connectTimeout(3)
-                    ->timeout(10)
-                    ->get("https://gateway.apiportal.ns.nl/reisinformatie-api/api/v3/disruptions/station/{$encodedStation}", [
-                        'isActive' => 'true',
-                    ]),
-            ]);
-        } catch (ConnectionException) {
-            $responses = [];
-        }
+        $departures = $this->parseDepartures($responses['departures']);
+        $disruptions = $this->parseDisruptions($responses['disruptions']);
 
-        $departuresResponse = $responses['departures'] ?? null;
+        $store->refresh(
+            is_array($departures) ? $departures : null,
+            is_array($disruptions) ? $disruptions : null,
+        );
 
-        if (! $departuresResponse instanceof Response) {
-            $errors[] = 'Could not connect to the NS departures API.';
-            $departuresResponse = null;
-        }
-
-        $disruptionsResponse = $responses['disruptions'] ?? null;
-
-        if (! $disruptionsResponse instanceof Response) {
-            $errors[] = 'Could not connect to the NS disruptions API.';
-            $disruptionsResponse = null;
-        }
-
-        $store = LiveDepartureBoardStore::make($station);
-        $departures = $this->storeDepartures($departuresResponse, $store, $errors);
-        $disruptions = $this->storeDisruptions($disruptionsResponse, $store, $errors);
+        $errors = array_filter([$departures, $disruptions], is_string(...));
 
         foreach ($errors as $error) {
             $this->error($error);
         }
 
-        $departuresCount = count($departures);
-        $disruptionsCount = count($disruptions);
-
-        if ($errors !== []) {
+        if (! is_array($departures)) {
             return self::FAILURE;
         }
 
-        $this->info("Stored {$departuresCount} upcoming departures and {$disruptionsCount} active disruptions.");
+        if (! is_array($disruptions)) {
+            return self::FAILURE;
+        }
+
+        $departuresCount = count($departures);
+        $disruptionsCount = count($disruptions);
+
+        $this->info("Stored {$departuresCount} departures and {$disruptionsCount} active disruptions.");
 
         return self::SUCCESS;
     }
 
-    /**
-     * @param  list<string>  $errors
-     * @return list<array{
-     *     time: string,
-     *     destination: string,
-     *     service: string,
-     *     status: string,
-     *     status_code: 'on_time'|'delayed'|'cancelled',
-     *     detail: string,
-     *     track: string,
-     *     planned_at: string,
-     *     actual_at: ?string,
-     * }>
-     */
-    private function storeDepartures(?Response $response, LiveDepartureBoardStore $store, array &$errors): array
+    private function nsRequest(PendingRequest $request, string $apiKey): PendingRequest
     {
-        if ($response === null) {
-            $store->markDeparturesStale();
+        return $request
+            ->baseUrl('https://gateway.apiportal.ns.nl/reisinformatie-api/api')
+            ->acceptJson()
+            ->withHeaders([
+                'Cache-Control' => 'no-cache',
+                'Ocp-Apim-Subscription-Key' => $apiKey,
+            ])
+            ->connectTimeout(3)
+            ->timeout(10);
+    }
 
-            return [];
+    /** @return list<Departure>|string */
+    private function parseDepartures(Response|Throwable $response): array|string
+    {
+        if (! $response instanceof Response) {
+            return 'Could not connect to the NS departures API.';
         }
 
         if ($response->failed()) {
-            $errors[] = "The NS departures API returned HTTP {$response->status()}.";
-            $store->markDeparturesStale();
-
-            return [];
+            return "The NS departures API returned HTTP {$response->status()}.";
         }
 
         $apiDepartures = $response->json('payload.departures');
 
         if (! is_array($apiDepartures)) {
-            $errors[] = 'The NS departures API response did not contain a departures list.';
-            $store->markDeparturesStale();
-
-            return [];
+            return 'The NS departures API response did not contain a departures list.';
         }
 
         $departures = [];
+
         foreach ($apiDepartures as $apiDeparture) {
             if (! is_array($apiDeparture)) {
                 continue;
             }
 
-            if (is_string($apiDeparture['departureStatus'] ?? null)) {
-                if (strtoupper($apiDeparture['departureStatus']) === 'DEPARTED') {
-                    continue;
-                }
+            if (($apiDeparture['departureStatus'] ?? null) === 'DEPARTED') {
+                continue;
             }
 
             $departure = $this->mapDeparture($apiDeparture);
@@ -153,35 +121,21 @@ class FetchLiveDeparturesCommand extends Command
                 continue;
             }
 
-            if (! CarbonImmutable::parse($departure['actual_at'] ?? $departure['planned_at'])->isFuture()) {
-                continue;
-            }
-
             $departures[] = $departure;
         }
-
-        $store->setDepartures($departures);
 
         return $departures;
     }
 
-    /**
-     * @param  list<string>  $errors
-     * @return list<array{title: string, detail: string}>
-     */
-    private function storeDisruptions(?Response $response, LiveDepartureBoardStore $store, array &$errors): array
+    /** @return list<Disruption>|string */
+    private function parseDisruptions(Response|Throwable $response): array|string
     {
-        if ($response === null) {
-            $store->markDisruptionsStale();
-
-            return [];
+        if (! $response instanceof Response) {
+            return 'Could not connect to the NS disruptions API.';
         }
 
         if ($response->failed()) {
-            $errors[] = "The NS disruptions API returned HTTP {$response->status()}.";
-            $store->markDisruptionsStale();
-
-            return [];
+            return "The NS disruptions API returned HTTP {$response->status()}.";
         }
 
         $apiDisruptions = $response->json('payload');
@@ -190,15 +144,12 @@ class FetchLiveDeparturesCommand extends Command
             $apiDisruptions = $response->json();
         }
 
-        if (is_array($apiDisruptions) && is_array($apiDisruptions['disruptions'] ?? null)) {
+        if (is_array($apiDisruptions['disruptions'] ?? null)) {
             $apiDisruptions = $apiDisruptions['disruptions'];
         }
 
         if (! is_array($apiDisruptions)) {
-            $errors[] = 'The NS disruptions API response did not contain a disruptions list.';
-            $store->markDisruptionsStale();
-
-            return [];
+            return 'The NS disruptions API response did not contain a disruptions list.';
         }
 
         $disruptions = [];
@@ -221,27 +172,17 @@ class FetchLiveDeparturesCommand extends Command
             $disruptions[] = $disruption;
         }
 
-        $store->setDisruptions($disruptions);
-
         return $disruptions;
     }
 
-    /** @param array<array-key, mixed> $departure
-     * @return array{
-     *     time: string,
-     *     destination: string,
-     *     service: string,
-     *     status: string,
-     *     status_code: 'on_time'|'delayed'|'cancelled',
-     *     detail: string,
-     *     track: string,
-     *     planned_at: string,
-     *     actual_at: ?string,
-     * }|null
+    /**
+     * @param  array<array-key, mixed>  $departure
+     * @return ?Departure
      */
     private function mapDeparture(array $departure): ?array
     {
         $plannedDateTime = $departure['plannedDateTime'] ?? null;
+        $actualDateTime = $departure['actualDateTime'] ?? null;
         $destination = $departure['direction'] ?? null;
 
         if (! is_string($plannedDateTime)) {
@@ -254,14 +195,9 @@ class FetchLiveDeparturesCommand extends Command
 
         try {
             $planned = CarbonImmutable::parse($plannedDateTime);
-            $actualDateTime = $departure['actualDateTime'] ?? null;
-            $actual = null;
-
-            if (is_string($actualDateTime)) {
-                if ($actualDateTime !== '') {
-                    $actual = CarbonImmutable::parse($actualDateTime);
-                }
-            }
+            $actual = is_string($actualDateTime) && filled($actualDateTime)
+                ? CarbonImmutable::parse($actualDateTime)
+                : null;
         } catch (Throwable) {
             return null;
         }
@@ -270,10 +206,10 @@ class FetchLiveDeparturesCommand extends Command
             ? 0
             : max(0, intdiv($actual->getTimestamp() - $planned->getTimestamp(), 60));
         $isCancelled = (bool) ($departure['cancelled'] ?? false);
-        $isOnTime = ! $isCancelled && $delayMinutes === 0;
+
         [$status, $statusCode, $detail] = match (true) {
             $isCancelled => ['Cancelled', 'cancelled', 'Service cancelled'],
-            $isOnTime => ['On time', 'on_time', 'On schedule'],
+            $delayMinutes === 0 => ['On time', 'on_time', 'On schedule'],
             default => ['Delayed', 'delayed', "+ {$delayMinutes} min"],
         };
 
@@ -290,11 +226,9 @@ class FetchLiveDeparturesCommand extends Command
         ];
     }
 
-    /** @param array<array-key, mixed> $disruption
-     * @return array{
-     *     title: string,
-     *     detail: string,
-     * }|null
+    /**
+     * @param  array<array-key, mixed>  $disruption
+     * @return ?Disruption
      */
     private function mapDisruption(array $disruption): ?array
     {
@@ -304,36 +238,22 @@ class FetchLiveDeparturesCommand extends Command
             return null;
         }
 
-        if (trim($title) === '') {
+        if (blank($title)) {
             return null;
         }
 
-        $situation = data_get($disruption, 'timespans.0.situation');
-        $detail = '';
-
-        foreach ([
+        $detail = collect([
             data_get($disruption, 'timespans.0.situation.label'),
-            is_string($situation) ? $situation : null,
+            data_get($disruption, 'timespans.0.situation'),
             $disruption['description'] ?? null,
             $disruption['topic'] ?? null,
             $disruption['summary'] ?? null,
             $disruption['cause'] ?? null,
-        ] as $candidate) {
-            if (! is_string($candidate)) {
-                continue;
-            }
-
-            if (trim($candidate) === '') {
-                continue;
-            }
-
-            $detail = trim($candidate);
-            break;
-        }
+        ])->first(fn (mixed $candidate): bool => is_string($candidate) && filled($candidate), '');
 
         return [
             'title' => trim($title),
-            'detail' => $detail,
+            'detail' => trim($detail),
         ];
     }
 }

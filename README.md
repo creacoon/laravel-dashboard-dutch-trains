@@ -81,3 +81,21 @@ Place the Livewire component in the host application's dashboard layout, using a
 ```blade
 <livewire:live-departure-board-tile position="a1" />
 ```
+
+The tile shows the station from the `station` and `station_name` config by default.
+
+## Show Multiple Stations
+
+To show another station, pass its NS station code and display name to the tile:
+
+```blade
+<livewire:live-departure-board-tile position="a1" />
+<livewire:live-departure-board-tile position="a2" station="Rtd" station-name="Rotterdam Centraal" />
+```
+
+Each station keeps its own data, so schedule the fetch command once per extra station with the `--station` option:
+
+```php
+Schedule::command('dashboard:fetch-live-departure-board')->everyFiveMinutes();
+Schedule::command('dashboard:fetch-live-departure-board --station=Rtd')->everyFiveMinutes();
+```

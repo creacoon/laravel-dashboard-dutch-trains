@@ -8,7 +8,10 @@ use Creacoon\LiveDepartureBoardTile\Tests\TestCase;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\Http;
+use Livewire\Features\SupportLockedProperties\CannotUpdateLockedPropertyException;
+use Livewire\Livewire;
 
+/** @phpstan-import-type Departure from LiveDepartureBoardStore */
 class FetchLiveDeparturesCommandTest extends TestCase
 {
     protected function setUp(): void
@@ -16,13 +19,6 @@ class FetchLiveDeparturesCommandTest extends TestCase
         parent::setUp();
 
         $this->travelTo('2026-10-05 11:00:00+02:00');
-    }
-
-    protected function tearDown(): void
-    {
-        $this->travelBack();
-
-        parent::tearDown();
     }
 
     public function test_stores_on_time_departures(): void
@@ -64,14 +60,18 @@ class FetchLiveDeparturesCommandTest extends TestCase
         $this->travelTo('2026-10-05 12:01:00+02:00');
         config()->set('dashboard.tiles.live_departure_board.visible_departures', 1);
 
-        $departures = $this->fetchDepartures([
+        $this->fetchDepartures([
             $this->apiDeparture('Already departed'),
             $this->apiDeparture('Utrecht', [
                 'plannedDateTime' => '2026-10-05T12:05:00+02:00',
             ]),
         ]);
 
-        self::assertSame(['Utrecht'], array_column($departures, 'destination'));
+        $component = new LiveDepartureBoardTileComponent;
+        $component->mount('a1');
+        $data = $component->render()->getData();
+
+        self::assertSame(['Utrecht'], array_column($data['departures'], 'destination'));
     }
 
     public function test_stores_delayed_departures_with_delay_detail(): void
@@ -112,25 +112,15 @@ class FetchLiveDeparturesCommandTest extends TestCase
         self::assertSame('Cancelled', $departures[0]['status']);
         self::assertSame('cancelled', $departures[0]['status_code']);
         self::assertSame('Service cancelled', $departures[0]['detail']);
-        self::assertSame('2026-10-05T12:00:00+02:00', $departures[0]['planned_at'] ?? null);
-        self::assertNull($departures[0]['actual_at'] ?? null);
+        self::assertSame('2026-10-05T12:00:00+02:00', $departures[0]['planned_at']);
+        self::assertNull($departures[0]['actual_at']);
     }
 
     public function test_keeps_last_departures_and_marks_them_stale_when_refresh_fails(): void
     {
-        $lastKnownDepartures = [
-            [
-                'time' => '12:00',
-                'destination' => 'Utrecht',
-                'service' => 'Intercity',
-                'status' => 'On time',
-                'status_code' => 'on_time',
-                'detail' => 'On schedule',
-                'track' => '1',
-            ],
-        ];
+        $lastKnownDepartures = [$this->storedDeparture('Utrecht')];
 
-        LiveDepartureBoardStore::make()->setDepartures($lastKnownDepartures);
+        LiveDepartureBoardStore::make()->refresh($lastKnownDepartures, []);
 
         Http::preventStrayRequests();
         Http::fake([
@@ -188,7 +178,7 @@ class FetchLiveDeparturesCommandTest extends TestCase
 
     public function test_stores_active_station_disruptions(): void
     {
-        LiveDepartureBoardStore::make()->markDisruptionsStale();
+        LiveDepartureBoardStore::make()->refresh([], null);
 
         $this->fetchDepartures([], [
             [
@@ -255,11 +245,11 @@ class FetchLiveDeparturesCommandTest extends TestCase
     public function test_clears_saved_disruptions_after_successful_empty_refresh(): void
     {
         LiveDepartureBoardStore::make()
-            ->setDisruptions([[
+            ->refresh([], [[
                 'title' => 'Old disruption',
                 'detail' => 'No longer active.',
             ]])
-            ->markDisruptionsStale();
+            ->refresh([], null);
 
         $this->fetchDepartures([], []);
 
@@ -275,7 +265,7 @@ class FetchLiveDeparturesCommandTest extends TestCase
             'detail' => 'Trains are running less frequently.',
         ]];
 
-        LiveDepartureBoardStore::make()->setDisruptions($lastKnownDisruptions);
+        LiveDepartureBoardStore::make()->refresh([], $lastKnownDisruptions);
 
         Http::preventStrayRequests();
         Http::fake([
@@ -305,8 +295,8 @@ class FetchLiveDeparturesCommandTest extends TestCase
         ];
 
         LiveDepartureBoardStore::make()
-            ->setDisruptions($disruptions)
-            ->markDisruptionsStale();
+            ->refresh([], $disruptions)
+            ->refresh([], null);
 
         $component = new LiveDepartureBoardTileComponent;
         $component->mount('a1');
@@ -319,7 +309,7 @@ class FetchLiveDeparturesCommandTest extends TestCase
 
     public function test_reports_unavailable_when_disruption_refresh_fails_without_saved_data(): void
     {
-        LiveDepartureBoardStore::make()->markDisruptionsStale();
+        LiveDepartureBoardStore::make()->refresh([], null);
 
         $component = new LiveDepartureBoardTileComponent;
         $component->mount('a1');
@@ -332,29 +322,10 @@ class FetchLiveDeparturesCommandTest extends TestCase
 
     public function test_filters_past_departures_before_rendering_tile(): void
     {
-        $store = LiveDepartureBoardStore::make();
-        $store->setDepartures([
-            [
-                'time' => '12:00',
-                'destination' => 'Utrecht',
-                'service' => 'Intercity',
-                'status' => 'On time',
-                'status_code' => 'on_time',
-                'detail' => 'On schedule',
-                'track' => '1',
-                'planned_at' => now()->subMinutes(5)->toIso8601String(),
-            ],
-            [
-                'time' => '12:15',
-                'destination' => 'Eindhoven',
-                'service' => 'Intercity',
-                'status' => 'On time',
-                'status_code' => 'on_time',
-                'detail' => 'On schedule',
-                'track' => '2',
-                'planned_at' => now()->addMinutes(5)->toIso8601String(),
-            ],
-        ]);
+        LiveDepartureBoardStore::make()->refresh([
+            $this->storedDeparture('Utrecht', now()->subMinutes(5)->toIso8601String()),
+            $this->storedDeparture('Eindhoven', now()->addMinutes(5)->toIso8601String()),
+        ], []);
 
         $component = new LiveDepartureBoardTileComponent;
         $component->mount('a1');
@@ -393,17 +364,7 @@ class FetchLiveDeparturesCommandTest extends TestCase
 
     public function test_renders_departures_for_an_explicit_station(): void
     {
-        LiveDepartureBoardStore::make('Rtd')->setDepartures([[
-            'time' => '12:05',
-            'destination' => 'Utrecht',
-            'service' => 'Intercity',
-            'status' => 'On time',
-            'status_code' => 'on_time',
-            'detail' => 'On schedule',
-            'track' => '1',
-            'planned_at' => now()->addMinutes(5)->toIso8601String(),
-            'actual_at' => null,
-        ]]);
+        LiveDepartureBoardStore::make('Rtd')->refresh([$this->storedDeparture('Utrecht')], []);
 
         $component = new LiveDepartureBoardTileComponent;
         $component->mount('a1', 'Rtd', 'Rotterdam');
@@ -413,20 +374,57 @@ class FetchLiveDeparturesCommandTest extends TestCase
         self::assertSame('Utrecht', $data['departures'][0]['destination']);
     }
 
+    public function test_reports_last_known_departures_when_departure_refresh_fails(): void
+    {
+        LiveDepartureBoardStore::make()
+            ->refresh([$this->storedDeparture('Utrecht')], [])
+            ->refresh(null, []);
+
+        $component = new LiveDepartureBoardTileComponent;
+        $component->mount('a1');
+        $data = $component->render()->getData();
+
+        self::assertSame(['Utrecht'], array_column($data['departures'], 'destination'));
+        self::assertTrue($data['departures_are_stale']);
+        self::assertSame('Departure update failed; showing last known departures.', $data['departures_stale_message']);
+    }
+
+    public function test_reports_unavailable_when_departure_refresh_fails_without_saved_data(): void
+    {
+        LiveDepartureBoardStore::make()->refresh(null, []);
+
+        $component = new LiveDepartureBoardTileComponent;
+        $component->mount('a1');
+        $data = $component->render()->getData();
+
+        self::assertSame([], $data['departures']);
+        self::assertSame('Departure information unavailable; the latest refresh failed.', $data['departures_stale_message']);
+    }
+
+    public function test_marks_the_requested_station_stale_when_the_api_key_is_missing(): void
+    {
+        config()->set('dashboard.tiles.live_departure_board.api_key', null);
+
+        self::assertSame(1, Artisan::call('dashboard:fetch-live-departure-board', [
+            '--station' => 'Rtd',
+        ]));
+
+        self::assertTrue(LiveDepartureBoardStore::make('Rtd')->departuresAreStale());
+        self::assertFalse(LiveDepartureBoardStore::make('Asd')->departuresAreStale());
+    }
+
+    public function test_does_not_allow_the_browser_to_change_the_station(): void
+    {
+        $this->expectException(CannotUpdateLockedPropertyException::class);
+
+        Livewire::test(LiveDepartureBoardTileComponent::class, ['position' => 'a1'])
+            ->set('station', 'Rtd');
+    }
+
     /**
      * @param  list<array<string, mixed>>  $apiDepartures
      * @param  list<array<string, mixed>>  $apiDisruptions
-     * @return list<array{
-     *     time: string,
-     *     destination: string,
-     *     service: string,
-     *     status: string,
-     *     status_code: 'on_time'|'delayed'|'cancelled',
-     *     detail: string,
-     *     track: string,
-     *     planned_at?: string,
-     *     actual_at?: ?string,
-     * }>
+     * @return list<Departure>
      */
     private function fetchDepartures(array $apiDepartures, array $apiDisruptions = []): array
     {
@@ -453,7 +451,8 @@ class FetchLiveDeparturesCommandTest extends TestCase
         return LiveDepartureBoardStore::make()->departures();
     }
 
-    /** @param array<string, mixed> $overrides
+    /**
+     * @param  array<string, mixed>  $overrides
      * @return array<string, mixed>
      */
     private function apiDeparture(string $destination, array $overrides = []): array

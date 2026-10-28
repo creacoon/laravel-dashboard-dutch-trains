@@ -56,14 +56,8 @@
                             'min-w-0 text-warning' => $departure['status_code'] === 'delayed',
                             'min-w-0 text-error' => $departure['status_code'] === 'cancelled',
                         ])>
-                            <span @class([
-                                'inline-flex max-w-full items-center gap-1 rounded-full px-1.5 py-1 text-[8px] font-medium leading-none sm:gap-1.5 sm:px-2 sm:text-[9px]',
-                                'bg-tile',
-                            ])>
-                                <span @class([
-                                    'size-[7px] shrink-0 rounded-full',
-                                    'bg-current',
-                                ])></span>
+                            <span class="inline-flex max-w-full items-center gap-1 rounded-full bg-tile px-1.5 py-1 text-[8px] font-medium leading-none sm:gap-1.5 sm:px-2 sm:text-[9px]">
+                                <span class="size-[7px] shrink-0 rounded-full bg-current"></span>
                                 <span class="truncate">{{ $departure['status'] }}</span>
                             </span>
                             <p class="mt-1 truncate text-[8px] font-semibold leading-tight sm:text-[9px]">{{ $departure['detail'] }}</p>

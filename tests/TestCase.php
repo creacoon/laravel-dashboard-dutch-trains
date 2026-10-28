@@ -2,24 +2,27 @@
 
 namespace Creacoon\LiveDepartureBoardTile\Tests;
 
+use Creacoon\LiveDepartureBoardTile\LiveDepartureBoardStore;
 use Creacoon\LiveDepartureBoardTile\LiveDepartureBoardTileServiceProvider;
-use Illuminate\Database\Schema\Blueprint;
-use Illuminate\Support\Facades\Schema;
 use Livewire\LivewireServiceProvider;
 use Orchestra\Testbench\TestCase as Orchestra;
+use Spatie\Dashboard\DashboardServiceProvider;
 
+/** @phpstan-import-type Departure from LiveDepartureBoardStore */
 abstract class TestCase extends Orchestra
 {
     protected function getPackageProviders($app): array
     {
         return [
             LivewireServiceProvider::class,
+            DashboardServiceProvider::class,
             LiveDepartureBoardTileServiceProvider::class,
         ];
     }
 
     protected function defineEnvironment($app): void
     {
+        $app['config']->set('app.key', 'base64:'.base64_encode(str_repeat('a', 32)));
         $app['config']->set('database.default', 'testing');
         $app['config']->set('database.connections.testing', [
             'driver' => 'sqlite',
@@ -37,11 +40,22 @@ abstract class TestCase extends Orchestra
     {
         parent::setUp();
 
-        Schema::create('dashboard_tiles', function (Blueprint $table): void {
-            $table->id();
-            $table->string('name');
-            $table->json('data')->nullable();
-            $table->timestamps();
-        });
+        (include __DIR__.'/../vendor/spatie/laravel-dashboard/database/migrations/create_dashboard_tiles_table.php.stub')->up();
+    }
+
+    /** @return Departure */
+    protected function storedDeparture(string $destination, ?string $plannedAt = null): array
+    {
+        return [
+            'time' => '12:00',
+            'destination' => $destination,
+            'service' => 'Intercity',
+            'status' => 'On time',
+            'status_code' => 'on_time',
+            'detail' => 'On schedule',
+            'track' => '1',
+            'planned_at' => $plannedAt ?? now()->addHour()->toIso8601String(),
+            'actual_at' => null,
+        ];
     }
 }
