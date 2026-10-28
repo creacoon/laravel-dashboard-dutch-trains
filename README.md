@@ -46,11 +46,12 @@ Add the tile configuration under `tiles` in the host application's `config/dashb
         'visible_departures' => 5,
         'visible_disruptions' => 2,
         'timezone' => 'Europe/Amsterdam',
+        'refresh_interval_in_seconds' => 60,
     ],
 ],
 ```
 
-Use an NS station code for `station` and the human-readable station name for `station_name`. `visible_departures` controls the maximum number of departures shown; it is clamped to at least one. `visible_disruptions` controls how many disruptions appear in the tile; any additional active disruptions are counted below the list. `timezone` controls the displayed departure times. After changing cached configuration in production, refresh it with `php artisan config:cache`.
+Use an NS station code for `station` and the human-readable station name for `station_name`. `visible_departures` controls the maximum number of departures shown; it is clamped to at least one. `visible_disruptions` controls how many disruptions appear in the tile; any additional active disruptions are counted below the list. `timezone` controls the displayed departure times. `refresh_interval_in_seconds` controls how often the tile re-renders from the stored data; it defaults to 60. After changing cached configuration in production, refresh it with `php artisan config:cache`.
 
 ## Schedule Departure Updates
 

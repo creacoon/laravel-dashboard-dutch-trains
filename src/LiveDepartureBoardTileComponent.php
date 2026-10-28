@@ -50,6 +50,7 @@ class LiveDepartureBoardTileComponent extends BaseTileComponent
                 ? 'Disruption information unavailable; the latest refresh failed.'
                 : 'Disruption update failed; showing last known information.',
             'station_name' => $this->stationName ?: $this->station,
+            'refresh_interval_in_seconds' => (int) config('dashboard.tiles.live_departure_board.refresh_interval_in_seconds', 60),
         ]);
     }
 }
